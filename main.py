@@ -224,10 +224,42 @@ def google_news_rss_search(query: str, max_items: int = 50) -> List[dict]:
 def candidate_articles() -> List[dict]:
     # Query mirate (come prima)
     queries = [
+        "referendum",
+        "AUSL Modena",
+        "azienda USL Modena",
+        "Ospedale Modena OR Baggiovara",
         "Italia appalti gara bando affidamento ANAC MEPA",
         "Italia sanità ospedale ASL AUSL SSN",
         "Emilia-Romagna sanità appalti gara bando",
         "Formula 1 Italia Imola Monza Ferrari",
+    ]
+
+    queries = [
+        # --- Modena: AUSL / Azienda USL ---
+        '"AUSL Modena" OR "Azienda USL di Modena" OR "Azienda Usl di Modena" OR "USL Modena"',
+        '("AUSL Modena" OR "Azienda USL di Modena") (sanità OR ospedale OR servizi OR "liste d\'attesa")',
+
+        # --- Modena: AOU / Policlinico / Baggiovara ---
+        '"Azienda Ospedaliero-Universitaria di Modena" OR "AOU Modena" OR Policlinico OR Baggiovara OR "Ospedale di Baggiovara"',
+        '("AOU Modena" OR Policlinico OR Baggiovara OR "Azienda Ospedaliero-Universitaria di Modena") (sanità OR pronto soccorso OR reparto OR intervento)',
+
+        # --- Persone (Altini, Baldino) ---
+        'Altini (sanità OR AUSL OR AOU OR "Emilia-Romagna")',
+        'Baldino (sanità OR AUSL OR AOU OR "Emilia-Romagna")',
+
+        # --- Regione Emilia-Romagna SOLO sanità ---
+        '("Regione Emilia-Romagna" OR "Emilia-Romagna" OR RER OR ER) (sanità OR sanitario OR ospedali OR AUSL OR AOU OR "liste d\'attesa")',
+
+        # --- Sanità generale (Italia + internazionale) ---
+        '(sanità OR sanitario OR ospedale OR SSN OR "Servizio sanitario nazionale" OR "liste d\'attesa") Italia',
+        '(healthcare OR hospital OR "public health" OR NHS OR "health system") (Europe OR EU OR Italia)',
+
+        # --- Appalti / contratti pubblici (generali e sanitari) ---
+        '(appalto OR "gara d\'appalto" OR bando OR affidamento OR "contratti pubblici" OR "codice dei contratti" OR "codice degli appalti" OR ANAC OR MEPA OR Consip) (sanità OR ospedale OR AUSL OR ASL OR AOU)',
+        '(appalto OR "gara d\'appalto" OR bando OR affidamento OR "contratti pubblici" OR "codice dei contratti" OR "codice degli appalti" OR ANAC OR MEPA OR Consip) Italia',
+
+        # --- Referendum (generico, per ora) ---
+        'referendum Italia OR "referendum abrogativo" OR "quesiti referendari"',
     ]
 
     arts: List[dict] = []
@@ -237,9 +269,9 @@ def candidate_articles() -> List[dict]:
         arts.extend(gdelt_search(q, max_records=40))
 
     # 2) Se GDELT dà pochi risultati (es. per 429/cooldown), fallback su Google News RSS
-    if len(arts) < 30:
+    if len(arts) < 80:
         for q in queries:
-            arts.extend(google_news_rss_search(q, max_items=60))
+            arts.extend(google_news_rss_search(q, max_items=120))
 
     # Dedup per URL
     seen = set()
