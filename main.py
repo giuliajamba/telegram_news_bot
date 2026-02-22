@@ -89,17 +89,23 @@ def gdelt_search(query: str, max_records: int = 80) -> List[dict]:
         "sort": "HybridRel",
         "lang": "italian",
     }
-    r = requests.get("https://api.gdeltproject.org/api/v2/doc/doc", params=params, timeout=25)
-    r.raise_for_status()
-    data = r.json()
-    return data.get("articles", []) or []
+    try:
+        r = requests.get("https://api.gdeltproject.org/api/v2/doc/doc", params=params, timeout=25)
+        r.raise_for_status()
+        data = r.json()
+        arts = data.get("articles", [])
+        return arts if isinstance(arts, list) else []
+    except Exception as e:
+        # Evita 500: se GDELT non risponde o risponde male, non crashare
+        print(f"GDELT error: {e}")
+        return []
 
 def candidate_articles() -> List[dict]:
     queries = [
         "Italia (appalti OR gara OR bando OR affidamento OR ANAC)",
         "Italia (sanità OR azienda sanitaria OR ospedale OR ASL OR AUSL)",
         "Emilia-Romagna (sanità OR appalti OR gara OR bando)",
-        "(Formula 1 OR F1) Italia",
+        "(Formula 1 OR F1) Italia"
     ]
     arts: List[dict] = []
     for q in queries:
@@ -254,68 +260,76 @@ async def tick(req: Request):
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(req: Request):
-    update = await req.json()
+    try:
+        update = await req.json()
 
-    msg = update.get("message")
-    if msg:
-        chat_id = msg["chat"]["id"]
-        text = (msg.get("text") or "").strip()
-        ensure_user(chat_id)
+        msg = update.get("message")
+        if msg:
+            chat_id = msg["chat"]["id"]
+            text = (msg.get("text") or "").strip()
+            ensure_user(chat_id)
 
-        if text == "/start":
-            send_message(
-                chat_id,
-                "Ciao! Ti mando 2 digest al giorno (09:00 e 21:00).\n"
-                "Usa i bottoni 👍👎⭐🔕 per farmi capire cosa ti interessa.\n"
-                "Comandi: /piu (altre 10), /meno (riduci rumore)."
-            )
-        elif text == "/piu":
-            picked = pick_digest(chat_id, n=10)
-            send_message(chat_id, "➕ Altre 10 notizie:")
-            for idx, (_, art) in enumerate(picked, start=1):
-                msg2, kb = build_article_message(idx, art)
-                send_message(chat_id, msg2, reply_markup=kb)
-        elif text == "/meno":
-            send_message(chat_id, "Ok. Usa 🔕 sulle notizie che vuoi vedere meno: abbasso tema e fonte automaticamente.")
-        elif text == "/test":
-            send_message(chat_id, "🧪 Test digest (5 notizie):")
-            picked = pick_digest(chat_id, n=5)
-            for idx, (_, art) in enumerate(picked, start=1):
-                msg2, kb = build_article_message(idx, art)
-                send_message(chat_id, msg2, reply_markup=kb)
-        else:
-            send_message(chat_id, "Ok 👍 Usa /piu per altre notizie o i bottoni sotto ogni articolo.")
+            if text == "/start":
+                send_message(
+                    chat_id,
+                    "Ciao! Ti mando 2 digest al giorno (09:00 e 21:00).\n"
+                    "Usa i bottoni 👍👎⭐🔕 per farmi capire cosa ti interessa.\n"
+                    "Comandi: /piu (altre 10), /meno (riduci rumore)."
+                )
+            elif text == "/piu":
+                picked = pick_digest(chat_id, n=10)
+                send_message(chat_id, "➕ Altre 10 notizie:")
+                for idx, (_, art) in enumerate(picked, start=1):
+                    msg2, kb = build_article_message(idx, art)
+                    send_message(chat_id, msg2, reply_markup=kb)
+            elif text == "/meno":
+                send_message(chat_id, "Ok. Usa 🔕 sulle notizie che vuoi vedere meno: abbasso tema e fonte automaticamente.")
+            elif text == "/test":
+                send_message(chat_id, "🧪 Test digest (5 notizie):")
+                picked = pick_digest(chat_id, n=5)
+                if not picked:
+                    send_message(chat_id, "😕 Al momento non riesco a recuperare notizie. Riprova tra poco.")
+                else:
+                    for idx, (_, art) in enumerate(picked, start=1):
+                        msg2, kb = build_article_message(idx, art)
+                        send_message(chat_id, msg2, reply_markup=kb)
+            else:
+                send_message(chat_id, "Ok 👍 Usa /piu per altre notizie o i bottoni sotto ogni articolo.")
 
-    cq = update.get("callback_query")
-    if cq:
-        callback_id = cq["id"]
-        chat_id = cq["message"]["chat"]["id"]
-        data = cq.get("data") or ""
-        try:
-            action, url = data.split("|", 1)
-        except ValueError:
-            answer_callback(callback_id, "Ok")
-            return {"ok": True}
+        cq = update.get("callback_query")
+        if cq:
+            callback_id = cq["id"]
+            chat_id = cq["message"]["chat"]["id"]
+            data = cq.get("data") or ""
+            try:
+                action, url = data.split("|", 1)
+            except ValueError:
+                answer_callback(callback_id, "Ok")
+                return {"ok": True}
 
-        ensure_user(chat_id)
-        add_feedback(chat_id, url, action.upper())
+            ensure_user(chat_id)
+            add_feedback(chat_id, url, action.upper())
 
-        domain = normalize_domain(url)
-        if action == "like":
-            bump_weight(chat_id, "source", domain, +0.4)
-            answer_callback(callback_id, "Segnato 👍")
-        elif action == "dislike":
-            bump_weight(chat_id, "source", domain, -0.5)
-            answer_callback(callback_id, "Segnato 👎")
-        elif action == "follow":
-            bump_weight(chat_id, "source", domain, +0.9)
-            answer_callback(callback_id, "Ok ⭐ (più simili)")
-        elif action == "less":
-            bump_weight(chat_id, "source", domain, -1.0)
-            answer_callback(callback_id, "Ok 🔕 (meno simili)")
-        elif action == "more":
-            answer_callback(callback_id, "Apri il link: se ti piace metti 👍")
-        else:
-            answer_callback(callback_id, "Ok")
+            domain = normalize_domain(url)
+            if action == "like":
+                bump_weight(chat_id, "source", domain, +0.4)
+                answer_callback(callback_id, "Segnato 👍")
+            elif action == "dislike":
+                bump_weight(chat_id, "source", domain, -0.5)
+                answer_callback(callback_id, "Segnato 👎")
+            elif action == "follow":
+                bump_weight(chat_id, "source", domain, +0.9)
+                answer_callback(callback_id, "Ok ⭐ (più simili)")
+            elif action == "less":
+                bump_weight(chat_id, "source", domain, -1.0)
+                answer_callback(callback_id, "Ok 🔕 (meno simili)")
+            elif action == "more":
+                answer_callback(callback_id, "Apri il link: se ti piace metti 👍")
+            else:
+                answer_callback(callback_id, "Ok")
 
-    return {"ok": True}
+        return {"ok": True}
+
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return {"ok": True}
