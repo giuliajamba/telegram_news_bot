@@ -32,10 +32,23 @@ _GDELT_LOCK = Lock()
 def tg(method: str, payload: dict):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
     r = requests.post(url, json=payload, timeout=25)
-    r.raise_for_status()
+
+    if not r.ok:
+        # stampa nei log cosa dice Telegram
+        try:
+            print(f"Telegram error {r.status_code}: {r.text}")
+        except Exception:
+            pass
+        # solleva comunque errore (così lo vedi)
+        r.raise_for_status()
+
     return r.json()
 
 def send_message(chat_id: int, text: str, reply_markup: dict | None = None, disable_preview: bool = True):
+    # Telegram limit: 4096 chars. Stiamo larghi.
+    if text and len(text) > 3500:
+        text = text[:3490] + "…"
+
     payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": disable_preview}
     if reply_markup:
         payload["reply_markup"] = reply_markup
