@@ -1,0 +1,17 @@
+name: Tick (every 15 min)
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /tick
+        run: |
+          curl -s -X POST "${{ secrets.TICK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"secret\":\"${{ secrets.TICK_SECRET }}\"}" \
+            | head -c 500
