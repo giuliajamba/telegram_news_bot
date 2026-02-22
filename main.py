@@ -277,6 +277,12 @@ async def telegram_webhook(req: Request):
                 send_message(chat_id, msg2, reply_markup=kb)
         elif text == "/meno":
             send_message(chat_id, "Ok. Usa 🔕 sulle notizie che vuoi vedere meno: abbasso tema e fonte automaticamente.")
+        elif text == "/test":
+            send_message(chat_id, "🧪 Test digest (5 notizie):")
+            picked = pick_digest(chat_id, n=5)
+            for idx, (_, art) in enumerate(picked, start=1):
+                msg2, kb = build_article_message(idx, art)
+                send_message(chat_id, msg2, reply_markup=kb)
         else:
             send_message(chat_id, "Ok 👍 Usa /piu per altre notizie o i bottoni sotto ogni articolo.")
 
