@@ -1,3 +1,5 @@
+import time
+from threading import Lock
 import os
 import re
 import datetime as dt
@@ -17,6 +19,11 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 
 ROME_TZ = tz.gettz("Europe/Rome")
 sb: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+# ---- GDELT cache & rate-limit guard ----
+_GDELT_CACHE = {}  # key -> (expires_ts, articles_list)
+_GDELT_CACHE_TTL_SEC = 15 * 60  # 15 minuti
+_GDELT_COOLDOWN_UNTIL = 0.0
+_GDELT_LOCK = Lock()
 
 
 # ---------- Telegram helpers ----------
@@ -81,6 +88,14 @@ TOPIC_SEEDS = {
 }
 
 def gdelt_search(query: str, max_records: int = 80) -> List[dict]:
+    global _GDELT_COOLDOWN_UNTIL
+
+    now = time.time()
+
+    # Se siamo in cooldown (dopo un 429), non chiamare GDELT
+    if now < _GDELT_COOLDOWN_UNTIL:
+        return []
+
     base_params = {
         "query": query,
         "mode": "ArtList",
@@ -89,33 +104,58 @@ def gdelt_search(query: str, max_records: int = 80) -> List[dict]:
         "sort": "HybridRel",
     }
 
-    def call(params: dict) -> List[dict]:
-        r = requests.get(
-            "https://api.gdeltproject.org/api/v2/doc/doc",
-            params=params,
-            timeout=20,
-        )
-        r.raise_for_status()
-        data = r.json()
-        arts = data.get("articles", [])
-        return arts if isinstance(arts, list) else []
+    def cached_call(params: dict, cache_key: str) -> List[dict]:
+        global _GDELT_COOLDOWN_UNTIL
+
+        # 1) prova cache
+        with _GDELT_LOCK:
+            item = _GDELT_CACHE.get(cache_key)
+            if item:
+                exp, data = item
+                if now < exp:
+                    return data
+                else:
+                    _GDELT_CACHE.pop(cache_key, None)
+
+        # 2) chiamata reale
+        try:
+            r = requests.get(
+                "https://api.gdeltproject.org/api/v2/doc/doc",
+                params=params,
+                timeout=20,
+            )
+
+            # Rate limit
+            if r.status_code == 429:
+                # cooldown: per i prossimi 10 minuti non chiamare GDELT
+                _GDELT_COOLDOWN_UNTIL = time.time() + 10 * 60
+                print(f"GDELT rate-limited (429). Cooldown fino a {_GDELT_COOLDOWN_UNTIL}.")
+                return []
+
+            r.raise_for_status()
+            data = r.json()
+            arts = data.get("articles", [])
+            arts = arts if isinstance(arts, list) else []
+
+            # 3) salva in cache
+            with _GDELT_LOCK:
+                _GDELT_CACHE[cache_key] = (time.time() + _GDELT_CACHE_TTL_SEC, arts)
+
+            return arts
+
+        except Exception as e:
+            print(f"GDELT error: {e}")
+            return []
 
     # Primo tentativo: italiano
-    try:
-        arts = call({**base_params, "lang": "italian"})
-        if arts:
-            return arts
-    except Exception as e:
-        print(f"GDELT error (italian): {e}")
+    arts_it = cached_call({**base_params, "lang": "italian"}, f"it|{max_records}|{query}")
+    if arts_it:
+        return arts_it
 
     # Fallback: senza filtro lingua
-    try:
-        arts = call(base_params)
-        return arts
-    except Exception as e:
-        print(f"GDELT error (fallback): {e}")
-        return []
-
+    arts_any = cached_call(base_params, f"any|{max_records}|{query}")
+    return arts_any
+    
 def candidate_articles() -> List[dict]:
     queries = [
         "Italia (appalti OR gara OR bando OR affidamento OR ANAC)",
@@ -125,7 +165,7 @@ def candidate_articles() -> List[dict]:
     ]
     arts: List[dict] = []
     for q in queries:
-        arts.extend(gdelt_search(q, max_records=80))
+        arts.extend(gdelt_search(q, max_records=40))
     seen = set()
     out = []
     for a in arts:
@@ -255,6 +295,10 @@ def send_digest(chat_id: int, slot: str):
 
 @app.get("/health")
 def health():
+    return {"ok": True}
+
+@app.get("/")
+def root():
     return {"ok": True}
 
 @app.post("/tick")
