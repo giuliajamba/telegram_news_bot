@@ -1,3 +1,5 @@
+import xml.etree.ElementTree as ET
+from urllib.parse import quote_plus
 import time
 from threading import Lock
 import os
@@ -156,16 +158,53 @@ def gdelt_search(query: str, max_records: int = 80) -> List[dict]:
     arts_any = cached_call(base_params, f"any|{max_records}|{query}")
     return arts_any
     
+def google_news_rss_search(query: str, max_items: int = 50) -> List[dict]:
+    """
+    Fallback gratuito: RSS di Google News.
+    Restituisce lista di "articoli" nello stesso formato base (title, url, description).
+    """
+    q = quote_plus(query)
+    rss_url = f"https://news.google.com/rss/search?q={q}&hl=it&gl=IT&ceid=IT:it"
+
+    try:
+        r = requests.get(rss_url, timeout=20)
+        r.raise_for_status()
+        root = ET.fromstring(r.text)
+
+        items = root.findall(".//item")
+        out = []
+        for it in items[:max_items]:
+            title = (it.findtext("title") or "").strip()
+            link = (it.findtext("link") or "").strip()
+            desc = (it.findtext("description") or "").strip()
+            if link:
+                out.append({"title": title, "url": link, "description": desc})
+        return out
+    except Exception as e:
+        print(f"Google News RSS error: {e}")
+        return []
+        
 def candidate_articles() -> List[dict]:
+    # Query mirate (come prima)
     queries = [
-        "Italia (appalti OR gara OR bando OR affidamento OR ANAC)",
-        "Italia (sanità OR azienda sanitaria OR ospedale OR ASL OR AUSL)",
-        "Emilia-Romagna (sanità OR appalti OR gara OR bando)",
-        "(Formula 1 OR F1) Italia"
+        "Italia appalti gara bando affidamento ANAC MEPA",
+        "Italia sanità ospedale ASL AUSL SSN",
+        "Emilia-Romagna sanità appalti gara bando",
+        "Formula 1 Italia Imola Monza Ferrari",
     ]
+
     arts: List[dict] = []
+
+    # 1) Prova con GDELT (più leggero)
     for q in queries:
         arts.extend(gdelt_search(q, max_records=40))
+
+    # 2) Se GDELT dà pochi risultati (es. per 429/cooldown), fallback su Google News RSS
+    if len(arts) < 30:
+        for q in queries:
+            arts.extend(google_news_rss_search(q, max_items=60))
+
+    # Dedup per URL
     seen = set()
     out = []
     for a in arts:
