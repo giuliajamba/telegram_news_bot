@@ -260,6 +260,9 @@ def candidate_articles() -> List[dict]:
 
         # --- Referendum (generico, per ora) ---
         'referendum Italia OR "referendum abrogativo" OR "quesiti referendari"',
+
+        # --- Formula 1 ---
+        '("Formula 1" OR F1)',
     ]
 
     arts: List[dict] = []
