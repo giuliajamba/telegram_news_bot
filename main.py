@@ -38,7 +38,7 @@ def answer_callback(callback_query_id: str, text: str = ""):
 
 # ---------- Supabase helpers ----------
 def ensure_user(chat_id: int):
-    sb.table("users").upsert({"chat_id": chat_id}).execute()
+    sb.table("users").upsert({"chat_id": chat_id}, on_conflict="chat_id").execute()
 
 def add_feedback(chat_id: int, url: str, action: str):
     sb.table("feedback").insert({"chat_id": chat_id, "article_url": url, "action": action}).execute()
