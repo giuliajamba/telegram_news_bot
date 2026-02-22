@@ -81,23 +81,39 @@ TOPIC_SEEDS = {
 }
 
 def gdelt_search(query: str, max_records: int = 80) -> List[dict]:
-    params = {
+    base_params = {
         "query": query,
         "mode": "ArtList",
         "format": "json",
         "maxrecords": str(max_records),
         "sort": "HybridRel",
-        "lang": "italian",
     }
-    try:
-        r = requests.get("https://api.gdeltproject.org/api/v2/doc/doc", params=params, timeout=25)
+
+    def call(params: dict) -> List[dict]:
+        r = requests.get(
+            "https://api.gdeltproject.org/api/v2/doc/doc",
+            params=params,
+            timeout=20,
+        )
         r.raise_for_status()
         data = r.json()
         arts = data.get("articles", [])
         return arts if isinstance(arts, list) else []
+
+    # Primo tentativo: italiano
+    try:
+        arts = call({**base_params, "lang": "italian"})
+        if arts:
+            return arts
     except Exception as e:
-        # Evita 500: se GDELT non risponde o risponde male, non crashare
-        print(f"GDELT error: {e}")
+        print(f"GDELT error (italian): {e}")
+
+    # Fallback: senza filtro lingua
+    try:
+        arts = call(base_params)
+        return arts
+    except Exception as e:
+        print(f"GDELT error (fallback): {e}")
         return []
 
 def candidate_articles() -> List[dict]:
