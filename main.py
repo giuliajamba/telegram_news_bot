@@ -263,6 +263,7 @@ async def telegram_webhook(req: Request):
     try:
         update = await req.json()
 
+        # ---- 1) Gestione messaggi (comandi /start /piu /meno /test) ----
         msg = update.get("message")
         if msg:
             chat_id = msg["chat"]["id"]
@@ -276,14 +277,20 @@ async def telegram_webhook(req: Request):
                     "Usa i bottoni 👍👎⭐🔕 per farmi capire cosa ti interessa.\n"
                     "Comandi: /piu (altre 10), /meno (riduci rumore)."
                 )
+
             elif text == "/piu":
                 picked = pick_digest(chat_id, n=10)
-                send_message(chat_id, "➕ Altre 10 notizie:")
-                for idx, (_, art) in enumerate(picked, start=1):
-                    msg2, kb = build_article_message(idx, art)
-                    send_message(chat_id, msg2, reply_markup=kb)
+                if not picked:
+                    send_message(chat_id, "😕 Al momento non riesco a recuperare notizie. Riprova tra poco.")
+                else:
+                    send_message(chat_id, "➕ Altre 10 notizie:")
+                    for idx, (_, art) in enumerate(picked, start=1):
+                        msg2, kb = build_article_message(idx, art)
+                        send_message(chat_id, msg2, reply_markup=kb)
+
             elif text == "/meno":
                 send_message(chat_id, "Ok. Usa 🔕 sulle notizie che vuoi vedere meno: abbasso tema e fonte automaticamente.")
+
             elif text == "/test":
                 send_message(chat_id, "🧪 Test digest (5 notizie):")
                 picked = pick_digest(chat_id, n=5)
@@ -293,14 +300,17 @@ async def telegram_webhook(req: Request):
                     for idx, (_, art) in enumerate(picked, start=1):
                         msg2, kb = build_article_message(idx, art)
                         send_message(chat_id, msg2, reply_markup=kb)
+
             else:
                 send_message(chat_id, "Ok 👍 Usa /piu per altre notizie o i bottoni sotto ogni articolo.")
 
+        # ---- 2) Gestione click sui bottoni (callback_query) ----
         cq = update.get("callback_query")
         if cq:
             callback_id = cq["id"]
             chat_id = cq["message"]["chat"]["id"]
             data = cq.get("data") or ""
+
             try:
                 action, url = data.split("|", 1)
             except ValueError:
