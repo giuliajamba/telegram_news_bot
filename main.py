@@ -1,3 +1,4 @@
+import hashlib
 import xml.etree.ElementTree as ET
 from urllib.parse import quote_plus
 import time
@@ -92,6 +93,29 @@ def bump_weight(chat_id: int, key_type: str, key: str, delta: float):
 def get_weights(chat_id: int) -> Dict[Tuple[str, str], float]:
     rows = sb.table("profile_weights").select("key_type,key,weight").eq("chat_id", chat_id).execute().data or []
     return {(r["key_type"], r["key"]): float(r["weight"]) for r in rows}
+
+def make_cb_id(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+
+def store_cb(chat_id: int, cb_id: str, url: str):
+    sb.table("callback_map").upsert(
+        {"chat_id": chat_id, "cb_id": cb_id, "url": url},
+        on_conflict="chat_id,cb_id"
+    ).execute()
+
+def load_cb_url(chat_id: int, cb_id: str) -> str | None:
+    row = (
+        sb.table("callback_map")
+        .select("url")
+        .eq("chat_id", chat_id)
+        .eq("cb_id", cb_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not row:
+        return None
+    return row[0].get("url")
 
 
 # ---------- News fetching (GDELT) ----------
@@ -291,18 +315,23 @@ def pick_digest(chat_id: int, n: int = 20) -> List[tuple]:
             break
     return out
 
-def build_article_message(i: int, a: dict) -> Tuple[str, dict]:
+def build_article_message(chat_id: int, i: int, a: dict) -> Tuple[str, dict]:
     title = a.get("title") or "(senza titolo)"
     url = a.get("url") or ""
     src = normalize_domain(url)
+
     text = f"{i}. {title}\n{src}\n{url}"
+
+    cb_id = make_cb_id(url)
+    store_cb(chat_id, cb_id, url)
+
     kb = {
         "inline_keyboard": [[
-            {"text": "👍", "callback_data": f"like|{url}"},
-            {"text": "👎", "callback_data": f"dislike|{url}"},
-            {"text": "🔎", "callback_data": f"more|{url}"},
-            {"text": "⭐", "callback_data": f"follow|{url}"},
-            {"text": "🔕", "callback_data": f"less|{url}"},
+            {"text": "👍", "callback_data": f"like|{cb_id}"},
+            {"text": "👎", "callback_data": f"dislike|{cb_id}"},
+            {"text": "🔎", "callback_data": f"more|{cb_id}"},
+            {"text": "⭐", "callback_data": f"follow|{cb_id}"},
+            {"text": "🔕", "callback_data": f"less|{cb_id}"},
         ]]
     }
     return text, kb
@@ -340,7 +369,7 @@ def send_digest(chat_id: int, slot: str):
 
     picked = pick_digest(chat_id, n=20)
     for idx, (_, art) in enumerate(picked, start=1):
-        msg, kb = build_article_message(idx, art)
+        msg, kb = build_article_message(chat_id, idx, art)
         send_message(chat_id, msg, reply_markup=kb)
 
     mark_sent(chat_id, slot, today)
@@ -397,7 +426,7 @@ async def telegram_webhook(req: Request):
                 else:
                     send_message(chat_id, "➕ Altre 10 notizie:")
                     for idx, (_, art) in enumerate(picked, start=1):
-                        msg2, kb = build_article_message(idx, art)
+                        msg2, kb = build_article_message(chat_id, idx, art)
                         send_message(chat_id, msg2, reply_markup=kb)
 
             elif text == "/meno":
@@ -410,7 +439,7 @@ async def telegram_webhook(req: Request):
                     send_message(chat_id, "😕 Al momento non riesco a recuperare notizie. Riprova tra poco.")
                 else:
                     for idx, (_, art) in enumerate(picked, start=1):
-                        msg2, kb = build_article_message(idx, art)
+                        msg2, kb = build_article_message(chat_id, idx, art)
                         send_message(chat_id, msg2, reply_markup=kb)
 
             else:
@@ -424,9 +453,14 @@ async def telegram_webhook(req: Request):
             data = cq.get("data") or ""
 
             try:
-                action, url = data.split("|", 1)
+                action, cb_id = data.split("|", 1)
             except ValueError:
                 answer_callback(callback_id, "Ok")
+                return {"ok": True}
+                
+            url = load_cb_url(chat_id, cb_id)
+            if not url:
+                answer_callback(callback_id, "Link scaduto. Riprova con /test.")
                 return {"ok": True}
 
             ensure_user(chat_id)
