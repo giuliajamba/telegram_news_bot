@@ -180,7 +180,7 @@ TOPIC_SEEDS = {
 
     # Modena “locale”
     "modena-sanitario": [
-        "ausl modena", "azienda usl di modena", "azienda usl modena", "usl modena",
+        "ausl modena", "Altini", "Baldino", "azienda usl di modena", "azienda usl modena", "usl modena",
         "aou modena", "azienda ospedaliero-universitaria di modena",
         "policlinico", "baggiovara", "ospedale di baggiovara",
     ],
