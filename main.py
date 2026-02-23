@@ -2,7 +2,6 @@ import os
 import re
 import time
 import hashlib
-import datetime as dt
 import xml.etree.ElementTree as ET
 from threading import Lock
 from typing import Dict, List, Tuple
@@ -10,7 +9,6 @@ from urllib.parse import quote_plus
 
 import requests
 from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse
 from supabase import create_client, Client
 from dateutil import tz
 
@@ -37,7 +35,6 @@ def tg(method: str, payload: dict):
     r = requests.post(url, json=payload, timeout=25)
 
     if not r.ok:
-        # log utile (NON stampa token; attenzione a non incollare questi log in chat con token)
         try:
             print(f"Telegram error {r.status_code}: {r.text}")
         except Exception:
@@ -154,7 +151,7 @@ def remember_sent(chat_id: int, url: str):
     ).execute()
 
 
-def get_recent_sent(chat_id: int, limit: int = 600) -> set[str]:
+def get_recent_sent(chat_id: int, limit: int = 800) -> set[str]:
     rows = (
         sb.table("sent_articles")
         .select("url")
@@ -170,18 +167,45 @@ def get_recent_sent(chat_id: int, limit: int = 600) -> set[str]:
 
 # -------------------- News fetching (GDELT + Google News RSS) --------------------
 TOPIC_SEEDS = {
-    "appalti": ["appalti", "gara", "bando", "affidamento", "capitolato", "anac", "cig", "mepa"],
-    "sanita": ["sanità", "azienda sanitaria", "ospedale", "asl", "ausl", "ssn", "lea"],
-    "emilia-romagna": ["emilia-romagna", "bologna", "modena", "reggio emilia", "parma", "ravenna", "ferrara", "rimini"],
-    "formula1": ["formula 1", "f1", "gran premio", "ferrari", "hamilton", "verstappen", "leclerc"],
+    # “macro” sanitari / istituzionali
+    "sanita": [
+        "sanità", "sanitario", "ospedale", "ospedali", "ssn",
+        "servizio sanitario nazionale", "liste d'attesa", "pronto soccorso",
+        "lea", "asl", "ausl", "aou", "policlinico", "baggiovara",
+    ],
+    "emilia-romagna-sanita": [
+        "emilia-romagna", "regione emilia-romagna", "rer", "er",
+        "assessorato alla sanità", "servizio sanitario regionale",
+    ],
+
+    # Modena “locale”
+    "modena-sanitario": [
+        "ausl modena", "azienda usl di modena", "azienda usl modena", "usl modena",
+        "aou modena", "azienda ospedaliero-universitaria di modena",
+        "policlinico", "baggiovara", "ospedale di baggiovara",
+    ],
+
+    # appalti
+    "appalti": [
+        "appalto", "appalti", "gara", "gara d'appalto", "bando", "affidamento",
+        "contratti pubblici", "codice dei contratti", "codice degli appalti",
+        "anac", "mepa", "consip", "cig", "capitolato",
+    ],
+
+    # referendum
+    "referendum": [
+        "referendum", "referendum abrogativo", "quesiti referendari", "quorum",
+    ],
+
+    # F1
+    "formula1": [
+        "formula 1", "f1", "gran premio", "ferrari", "leclerc", "verstappen",
+        "hamilton", "imola", "monza",
+    ],
 }
 
 
 def gdelt_search(query: str, max_records: int = 80) -> List[dict]:
-    """
-    Ritorna una lista di dict {title,url,description,...} o [].
-    Ha cache 15 min e cooldown 10 min dopo 429.
-    """
     global _GDELT_COOLDOWN_UNTIL
 
     now = time.time()
@@ -208,13 +232,13 @@ def gdelt_search(query: str, max_records: int = 80) -> List[dict]:
                     return data
                 _GDELT_CACHE.pop(cache_key, None)
 
-        # call
         try:
             r = requests.get(
                 "https://api.gdeltproject.org/api/v2/doc/doc",
                 params=params,
                 timeout=20,
             )
+
             if r.status_code == 429:
                 _GDELT_COOLDOWN_UNTIL = time.time() + 10 * 60
                 print(f"GDELT rate-limited (429). Cooldown fino a {_GDELT_COOLDOWN_UNTIL}.")
@@ -244,10 +268,6 @@ def gdelt_search(query: str, max_records: int = 80) -> List[dict]:
 
 
 def google_news_rss_search(query: str, max_items: int = 120) -> List[dict]:
-    """
-    Fallback gratuito: RSS di Google News.
-    Restituisce lista di dict con chiavi minime: title, url, description.
-    """
     q = quote_plus(query)
     rss_url = f"https://news.google.com/rss/search?q={q}&hl=it&gl=IT&ceid=IT:it"
 
@@ -272,24 +292,18 @@ def google_news_rss_search(query: str, max_items: int = 120) -> List[dict]:
 
 
 def candidate_articles() -> List[dict]:
-    # Query “cerchi concentrici”: specifiche -> ampie
+    # Query bilanciate: Modena sì, ma anche ER, nazionale, appalti, referendum, F1.
     queries = [
-        # --- Modena: AUSL / Azienda USL ---
+        # --- Modena: AUSL / AOU ---
         '"AUSL Modena" OR "Azienda USL di Modena" OR "Azienda Usl di Modena" OR "USL Modena"',
-        '("AUSL Modena" OR "Azienda USL di Modena") (sanità OR ospedale OR servizi OR "liste d\'attesa")',
-
-        # --- Modena: AOU / Policlinico / Baggiovara ---
         '"Azienda Ospedaliero-Universitaria di Modena" OR "AOU Modena" OR Policlinico OR Baggiovara OR "Ospedale di Baggiovara"',
-        '("AOU Modena" OR Policlinico OR Baggiovara OR "Azienda Ospedaliero-Universitaria di Modena") (sanità OR pronto soccorso OR reparto OR intervento)',
-
-        # --- Persone (Altini, Baldino) ---
         'Altini (sanità OR AUSL OR AOU OR "Emilia-Romagna")',
         'Baldino (sanità OR AUSL OR AOU OR "Emilia-Romagna")',
 
         # --- Regione Emilia-Romagna SOLO sanità ---
         '("Regione Emilia-Romagna" OR "Emilia-Romagna" OR RER OR ER) (sanità OR sanitario OR ospedali OR AUSL OR AOU OR "liste d\'attesa")',
 
-        # --- Sanità generale (Italia + internazionale) ---
+        # --- Sanità generale ---
         '(sanità OR sanitario OR ospedale OR SSN OR "Servizio sanitario nazionale" OR "liste d\'attesa") Italia',
         '(healthcare OR hospital OR "public health" OR NHS OR "health system") (Europe OR EU OR Italia)',
 
@@ -297,11 +311,11 @@ def candidate_articles() -> List[dict]:
         '(appalto OR "gara d\'appalto" OR bando OR affidamento OR "contratti pubblici" OR "codice dei contratti" OR "codice degli appalti" OR ANAC OR MEPA OR Consip) (sanità OR ospedale OR AUSL OR ASL OR AOU)',
         '(appalto OR "gara d\'appalto" OR bando OR affidamento OR "contratti pubblici" OR "codice dei contratti" OR "codice degli appalti" OR ANAC OR MEPA OR Consip) Italia',
 
-        # --- Referendum ---
-        'referendum Italia OR "referendum abrogativo" OR "quesiti referendari"',
+        # --- Referendum (un pelo più “contestuale” per ridurre rumore) ---
+        'referendum (Italia OR governo OR Parlamento OR Corte OR quorum OR "quesiti referendari")',
 
-        # --- Formula 1 ---
-        '("Formula 1" OR F1)',
+        # --- Formula 1 (meno generica) ---
+        '("Formula 1" OR F1) (Ferrari OR Leclerc OR "Gran Premio" OR Imola OR Monza)',
     ]
 
     arts: List[dict] = []
@@ -343,11 +357,9 @@ def extract_features(title: str, desc: str, url: str) -> Dict[str, List[str]]:
 
     domain = normalize_domain(url)
 
+    # termini “utili” per scoring (leggeri)
     terms = []
-    for w in [
-        "anac", "mepa", "affidamento", "gara", "bando",
-        "ausl", "asl", "capitolato", "regione", "formula 1", "f1"
-    ]:
+    for w in ["anac", "mepa", "affidamento", "gara", "bando", "ausl", "aou", "referendum", "formula 1", "f1"]:
         if w in text:
             terms.append(w)
 
@@ -367,12 +379,12 @@ def score_article(weights: Dict[Tuple[str, str], float], feats: Dict[str, List[s
 
 def pick_digest(chat_id: int, n: int = 20) -> List[tuple]:
     """
-    Ritorna lista [(feats, article_dict), ...] lunga al massimo n,
-    escludendo URL già inviati all'utente.
+    Seleziona fino a n articoli, evitando quelli già inviati.
+    Bilancia: massimo 3 articoli 'modena-sanitario' per digest.
     """
     arts = candidate_articles()
     weights = get_weights(chat_id)
-    sent = get_recent_sent(chat_id, limit=600)
+    sent = get_recent_sent(chat_id, limit=800)
 
     scored = []
     for a in arts:
@@ -394,7 +406,7 @@ def pick_digest(chat_id: int, n: int = 20) -> List[tuple]:
     domain_count: Dict[str, int] = {}
     out: List[tuple] = []
 
-    # Selezione "varia" (limiti per dominio e topic)
+    # Selezione "varia" (limiti per dominio e per topic)
     for _, feats, a in scored:
         dom = feats["domain"][0] if feats["domain"] else "unknown"
         if domain_count.get(dom, 0) >= 4:
@@ -402,7 +414,9 @@ def pick_digest(chat_id: int, n: int = 20) -> List[tuple]:
 
         ok = True
         for t in feats["topics"]:
-            if topic_count.get(t, 0) >= 4:
+            # qui il bilanciamento: Modena massimo 3
+            limit = 3 if t == "modena-sanitario" else 4
+            if topic_count.get(t, 0) >= limit:
                 ok = False
                 break
         if not ok:
@@ -417,7 +431,7 @@ def pick_digest(chat_id: int, n: int = 20) -> List[tuple]:
             break
 
     # Piano B: se per i limiti varietà rimangono pochi risultati,
-    # riempiamo senza limiti, pur sempre senza ripetizioni.
+    # riempiamo senza limiti (ma sempre senza ripetizioni).
     if len(out) < n:
         already = {x[1].get("url") for x in out}
         for _, feats, a in scored:
